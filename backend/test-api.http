@@ -1,0 +1,63 @@
+### Backend API Test File
+### Sử dụng REST Client extension trong VS Code để test
+###
+### Cách lấy JWT Token:
+### 1. Đăng nhập vào frontend
+### 2. Mở Browser DevTools > Console
+### 3. Chạy: const { data } = await supabase.auth.getSession(); console.log(data.session.access_token);
+### 4. Copy token và thay thế YOUR_JWT_TOKEN_HERE bên dưới
+
+### Health Check
+GET http://localhost:3000/health
+
+###
+
+### Get All Categories (cần JWT token)
+GET http://localhost:3000/api/categories
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+###
+
+### Get Category by ID
+GET http://localhost:3000/api/categories/YOUR_CATEGORY_ID
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+###
+
+### Create New Category
+POST http://localhost:3000/api/categories
+Content-Type: application/json
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+{
+  "name": "Dự án mới",
+  "description": "Mô tả dự án",
+  "color": "#ff6b6b"
+}
+
+###
+
+### Update Category
+PUT http://localhost:3000/api/categories/YOUR_CATEGORY_ID
+Content-Type: application/json
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+{
+  "name": "Tên dự án đã cập nhật",
+  "description": "Mô tả mới",
+  "color": "#4ecdc4"
+}
+
+###
+
+### Delete Category
+DELETE http://localhost:3000/api/categories/YOUR_CATEGORY_ID
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+###
+
+### Get Categories by Group
+GET http://localhost:3000/api/categories/group/YOUR_GROUP_ID
+Authorization: Bearer YOUR_JWT_TOKEN_HERE
+
+###
