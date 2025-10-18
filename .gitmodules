@@ -1,0 +1,3 @@
+[submodule "SimpleRAG_langChain"]
+	path = SimpleRAG_langChain
+	url = https://github.com/LongHaiTown/SimpleRAG_langChain
