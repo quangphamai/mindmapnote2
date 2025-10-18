@@ -248,90 +248,174 @@ const globalSearch = async (req, res) => {
  * Tìm kiếm nhanh với autocomplete
  * GET /api/search/quick
  */
+// const quickSearch = async (req, res) => {
+//     try {
+//         const userId = req.user.id;
+//         const { q: query, limit = 5 } = req.query;
+
+//         if (!query || query.trim().length < 2) {
+//             return res.status(400).json({
+//                 error: 'Bad Request',
+//                 message: 'Search query must be at least 2 characters long'
+//             });
+//         }
+
+//         const searchQuery = query.trim();
+//         const searchLimit = Math.min(parseInt(limit), 20);
+
+//         // Search documents
+//         const { data: documents, error: docsError } = await supabase
+//             .from('documents')
+//             .select(`
+//                 id,
+//                 title,
+//                 description,
+//                 file_name,
+//                 file_type,
+//                 file_size,
+//                 category_id,
+//                 categories:category_id (name, color)
+//             `)
+//             .eq('created_by', userId)
+//             .or(`title.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%`)
+//             .limit(searchLimit);
+
+//         if (docsError) {
+//             console.error('Quick search documents error:', docsError);
+//         }
+
+//         // Search categories
+//         const { data: categories, error: catsError } = await supabase
+//             .from('categories')
+//             .select('id, name, description, color')
+//             .eq('created_by', userId)
+//             .or(`name.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%`)
+//             .limit(searchLimit);
+
+//         if (catsError) {
+//             console.error('Quick search categories error:', catsError);
+//         }
+
+//         // Combine results
+//         const results = [
+//             ...(documents || []).map(doc => ({
+//                 id: doc.id,
+//                 type: 'document',
+//                 title: doc.title,
+//                 description: doc.description,
+//                 file_name: doc.file_name,
+//                 file_type: doc.file_type,
+//                 file_size: doc.file_size,
+//                 category_name: doc.categories?.name,
+//                 category_color: doc.categories?.color
+//             })),
+//             ...(categories || []).map(cat => ({
+//                 id: cat.id,
+//                 type: 'category',
+//                 title: cat.name,
+//                 description: cat.description,
+//                 category_name: cat.name,
+//                 category_color: cat.color
+//             }))
+//         ].slice(0, searchLimit);
+
+//         return res.status(200).json({
+//             success: true,
+//             results
+//         });
+
+//     } catch (error) {
+//         console.error('Quick search error:', error);
+//         return res.status(500).json({
+//             error: 'Internal Server Error',
+//             message: 'Failed to perform quick search'
+//         });
+//     }
+// };
+
+
 const quickSearch = async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { q: query, limit = 5 } = req.query;
+  try {
+    const userId = req.user?.id; // nếu có auth, lấy user
+    const { q: query, limit = 5 } = req.query;
 
-        if (!query || query.trim().length < 2) {
-            return res.status(400).json({
-                error: 'Bad Request',
-                message: 'Search query must be at least 2 characters long'
-            });
-        }
-
-        const searchQuery = query.trim();
-        const searchLimit = Math.min(parseInt(limit), 20);
-
-        // Search documents
-        const { data: documents, error: docsError } = await supabase
-            .from('documents')
-            .select(`
-                id,
-                title,
-                description,
-                file_name,
-                file_type,
-                file_size,
-                category_id,
-                categories:category_id (name, color)
-            `)
-            .eq('created_by', userId)
-            .or(`title.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%`)
-            .limit(searchLimit);
-
-        if (docsError) {
-            console.error('Quick search documents error:', docsError);
-        }
-
-        // Search categories
-        const { data: categories, error: catsError } = await supabase
-            .from('categories')
-            .select('id, name, description, color')
-            .eq('created_by', userId)
-            .or(`name.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%`)
-            .limit(searchLimit);
-
-        if (catsError) {
-            console.error('Quick search categories error:', catsError);
-        }
-
-        // Combine results
-        const results = [
-            ...(documents || []).map(doc => ({
-                id: doc.id,
-                type: 'document',
-                title: doc.title,
-                description: doc.description,
-                file_name: doc.file_name,
-                file_type: doc.file_type,
-                file_size: doc.file_size,
-                category_name: doc.categories?.name,
-                category_color: doc.categories?.color
-            })),
-            ...(categories || []).map(cat => ({
-                id: cat.id,
-                type: 'category',
-                title: cat.name,
-                description: cat.description,
-                category_name: cat.name,
-                category_color: cat.color
-            }))
-        ].slice(0, searchLimit);
-
-        return res.status(200).json({
-            success: true,
-            results
-        });
-
-    } catch (error) {
-        console.error('Quick search error:', error);
-        return res.status(500).json({
-            error: 'Internal Server Error',
-            message: 'Failed to perform quick search'
-        });
+    // ⚠️ Kiểm tra đầu vào
+    if (!query || query.trim().length < 2) {
+      return res.status(400).json({
+        success: false,
+        message: 'Search query must be at least 2 characters long.',
+      });
     }
+
+    const searchQuery = query.trim();
+    const searchLimit = Math.min(parseInt(limit), 20);
+
+    // 🔍 Truy vấn database
+    const { data: documents, error } = await supabase
+      .from('documents')
+      .select(`
+        id,
+        title,
+        file_name,
+        file_type,
+        file_size,
+        created_at,
+        category_id,
+        categories:category_id (name, color)
+      `)
+
+      .or(`title.ilike.%${searchQuery}%,file_name.ilike.%${searchQuery}%`)
+      .order('created_at', { ascending: false })
+      .limit(searchLimit);
+
+    // ⚠️ Nếu có lỗi từ Supabase
+    if (error) {
+      console.error('❌ Supabase search error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Database error while performing search.',
+        details: error.message,
+      });
+    }
+
+    // ⚠️ Không có kết quả
+    if (!documents || documents.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: `No documents found matching "${searchQuery}".`,
+        results: [],
+      });
+    }
+
+    // ✅ Format kết quả
+    const results = documents.map(doc => ({
+      id: doc.id,
+      type: 'document',
+      title: doc.title || '(Untitled)',
+      file_name: doc.file_name,
+      file_type: doc.file_type,
+      file_size: doc.file_size,
+      category_name: doc.categories?.name || 'Uncategorized',
+      category_color: doc.categories?.color || '#999999',
+      created_at: doc.created_at,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      count: results.length,
+      results,
+    });
+
+  } catch (error) {
+    console.error('❌ Quick search error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal Server Error: Failed to perform search.',
+      details: error.message,
+    });
+  }
 };
+
 
 /**
  * Tìm kiếm trong nội dung file
