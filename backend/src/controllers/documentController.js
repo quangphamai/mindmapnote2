@@ -537,6 +537,81 @@ const getDocumentsByCategory = async (req, res) => {
     }
 };
 
+/**
+ * Tìm kiếm documents theo tên hoặc tiêu đề
+ * GET /api/documents/search?q=keyword
+ */
+const searchDocuments = async (req, res) => {
+    try {
+        const userId = req.user?.id; // Có thể bỏ nếu chưa dùng auth
+        const { q, type } = req.query;
+
+        if (!q || q.trim() === '') {
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: 'Missing search query parameter (q)'
+            });
+        }
+
+        // Xây dựng truy vấn cơ bản
+        let query = supabase
+            .from('documents')
+            .select(`
+                id,
+                title,
+                description,
+                file_name,
+                file_type,
+                document_type,
+                tags,
+                updated_at,
+                created_by
+            `)
+            // Tìm trong title hoặc file_name (case-insensitive)
+            .or(`title.ilike.%${q}%,file_name.ilike.%${q}%`)
+            .order('updated_at', { ascending: false });
+
+        // Lọc theo document type nếu có
+        if (type && type !== 'all') {
+            query = query.eq('document_type', type);
+        }
+
+        // Lọc theo user nếu có auth
+        if (userId) {
+            query = query.eq('created_by', userId);
+        }
+
+        const { data, error } = await query;
+
+        if (error) {
+            console.error('Search documents error:', error);
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: error.message
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            count: data.length,
+            data: data.map((doc) => ({
+                id: doc.id,
+                title: doc.title || doc.file_name,
+                content: doc.description || '',
+                type: doc.document_type,
+                tags: doc.tags || [],
+                lastModified: new Date(doc.updated_at).toISOString(),
+            })),
+        });
+    } catch (error) {
+        console.error('Search documents error:', error);
+        return res.status(500).json({
+            error: 'Internal Server Error',
+            message: 'Failed to search documents'
+        });
+    }
+};
+
 module.exports = {
     upload,
     uploadDocument,
@@ -545,6 +620,7 @@ module.exports = {
     getDownloadUrl,
     updateDocument,
     deleteDocument,
-    getDocumentsByCategory
+    getDocumentsByCategory,
+    searchDocuments
 };
 
