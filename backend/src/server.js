@@ -8,6 +8,8 @@ const categoryRoutes = require('./routes/categoryRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 const searchRoutes = require('./routes/searchRoutes');
 const groupRoutes = require('./routes/groupRoutes');
+const inviteRoutes = require('./routes/inviteRoutes');
+const dashboardRoutes = require('./routes/dashboardRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -69,6 +71,8 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/groups', groupRoutes);
+app.use('/api/invites', inviteRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 
 // 404 handler
 app.use((req, res) => {

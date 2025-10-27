@@ -1,11 +1,37 @@
 const { supabase } = require('../config/supabase');
+const { hasDocumentAccess } = require('../middleware/acl');
 const multer = require('multer');
 const path = require('path');
+const crypto = require('crypto');
 
 /**
  * Cấu hình multer để xử lý upload files
  * Lưu file tạm thời trong memory trước khi upload lên Supabase Storage
  */
+const DOCUMENT_SELECT = `
+    *,
+    categories:category_id (
+        id,
+        name,
+        color,
+        description
+    )
+`;
+
+const isMissingTableError = (error) => {
+    if (!error) return false;
+    const code = error.code || error.hint;
+    const rawMessage = error.message || error.details || '';
+    const normalizedMessage = typeof rawMessage === 'string' ? rawMessage.toLowerCase() : '';
+    return (
+        code === '42P01' ||
+        code === 'PGRST204' ||
+        code === 'PGRST205' ||
+        normalizedMessage.includes('does not exist') ||
+        normalizedMessage.includes('could not find the table')
+    );
+};
+
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
@@ -53,8 +79,9 @@ const upload = multer({
  */
 const uploadDocument = async (req, res) => {
     try {
-        const userId = req.user.id;
-        const { title, description, category_id, group_id, tags } = req.body;
+    const userId = req.user.id;
+    const userEmail = req.user.email;
+    const { title, description, category_id, group_id, tags } = req.body;
         const file = req.file;
 
         if (!file) {
@@ -62,6 +89,26 @@ const uploadDocument = async (req, res) => {
                 error: 'Bad Request',
                 message: 'No file provided'
             });
+        }
+
+        let groupMembership = null;
+        if (group_id) {
+            const { data: membership, error: membershipError } = await supabase
+                .from('group_members')
+                .select('role')
+                .eq('group_id', group_id)
+                .eq('user_id', userId)
+                .eq('is_active', true)
+                .single();
+
+            if (membershipError || !membership) {
+                return res.status(403).json({
+                    error: 'Forbidden',
+                    message: 'You are not a member of this group'
+                });
+            }
+
+            groupMembership = membership;
         }
 
         if (!title || title.trim() === '') {
@@ -152,6 +199,31 @@ const uploadDocument = async (req, res) => {
             });
         }
 
+        if (group_id) {
+            const defaultAccess = groupMembership?.role === 'owner' ? 'admin' : 'write';
+            const { error: linkError } = await supabase
+                .from('group_documents')
+                .upsert({
+                    group_id,
+                    document_id: data.id,
+                    access_level: defaultAccess,
+                    added_by: userId
+                }, { onConflict: 'group_id,document_id' });
+
+            if (linkError) {
+                console.error('Error linking document to group:', linkError);
+                await supabase
+                    .from('documents')
+                    .delete()
+                    .eq('id', data.id);
+                await supabase.storage.from('documents').remove([filePath]);
+                return res.status(500).json({
+                    error: 'Internal Server Error',
+                    message: 'Document created but failed to link to group'
+                });
+            }
+        }
+
         // Log activity
         await supabase
             .from('activity_logs')
@@ -189,48 +261,174 @@ const getAllDocuments = async (req, res) => {
         const userId = req.user.id;
         const { category_id, document_type, search } = req.query;
 
-        let query = supabase
-            .from('documents')
-            .select(`
-                *,
-                categories:category_id (
-                    id,
-                    name,
-                    color
-                )
-            `)
-            .eq('created_by', userId)
-            .order('created_at', { ascending: false });
+        const applyFilters = (query) => {
+            let q = query;
+            if (category_id) {
+                q = q.eq('category_id', category_id);
+            }
+            if (document_type) {
+                q = q.eq('document_type', document_type);
+            }
+            if (search) {
+                q = q.ilike('title', `%${search}%`);
+            }
+            return q;
+        };
 
-        // Filter by category
-        if (category_id) {
-            query = query.eq('category_id', category_id);
-        }
+        const ownQuery = applyFilters(
+            supabase
+                .from('documents')
+                .select(DOCUMENT_SELECT)
+                .eq('created_by', userId)
+                .order('created_at', { ascending: false })
+        );
 
-        // Filter by document type
-        if (document_type) {
-            query = query.eq('document_type', document_type);
-        }
-
-        // Search by title
-        if (search) {
-            query = query.ilike('title', `%${search}%`);
-        }
-
-        const { data, error } = await query;
-
-        if (error) {
-            console.error('Get documents error:', error);
+        const { data: ownDocs, error: ownError } = await ownQuery;
+        if (ownError) {
+            console.error('Get own documents error:', ownError);
             return res.status(400).json({
                 error: 'Bad Request',
-                message: error.message
+                message: ownError.message
             });
         }
 
+        const ownDocIds = new Set((ownDocs || []).map(doc => doc.id));
+        const accessibleDocIds = new Set();
+
+        const { data: memberships, error: membershipError } = await supabase
+            .from('group_members')
+            .select('group_id')
+            .eq('user_id', userId)
+            .eq('is_active', true);
+
+        if (membershipError) {
+            console.error('Fetch memberships error:', membershipError);
+            return res.status(500).json({
+                error: 'Internal Server Error',
+                message: membershipError.message
+            });
+        }
+
+        const groupIds = (memberships || []).map(m => m.group_id);
+
+        if (groupIds.length) {
+            const { data: linkedDocs, error: linkedError } = await supabase
+                .from('group_documents')
+                .select('document_id')
+                .in('group_id', groupIds);
+
+            if (linkedError) {
+                if (isMissingTableError(linkedError)) {
+                    console.warn('group_documents table missing; skipping shared link lookup');
+                } else {
+                    console.error('Fetch group document links error:', linkedError);
+                    return res.status(500).json({
+                        error: 'Internal Server Error',
+                        message: linkedError.message
+                    });
+                }
+            }
+
+            linkedDocs?.forEach(entry => accessibleDocIds.add(entry.document_id));
+
+            const { data: inlineDocs, error: inlineError } = await supabase
+                .from('documents')
+                .select('id')
+                .in('group_id', groupIds);
+
+            if (inlineError) {
+                console.error('Fetch inline group documents error:', inlineError);
+                return res.status(500).json({
+                    error: 'Internal Server Error',
+                    message: inlineError.message
+                });
+            }
+
+            inlineDocs?.forEach(doc => accessibleDocIds.add(doc.id));
+        }
+
+        const { data: directAclDocs, error: directAclError } = await supabase
+            .from('document_acl')
+            .select('document_id')
+            .eq('subject_type', 'user')
+            .eq('subject_id', userId);
+
+        if (directAclError) {
+            if (isMissingTableError(directAclError)) {
+                console.warn('document_acl table missing; skipping direct ACL lookup');
+            } else {
+                console.error('Fetch document ACL (user) error:', directAclError);
+                return res.status(500).json({
+                    error: 'Internal Server Error',
+                    message: directAclError.message
+                });
+            }
+        }
+
+        directAclDocs?.forEach(entry => accessibleDocIds.add(entry.document_id));
+
+        if (groupIds.length) {
+            const { data: groupAclDocs, error: groupAclError } = await supabase
+                .from('document_acl')
+                .select('document_id')
+                .eq('subject_type', 'group')
+                .in('subject_id', groupIds);
+
+            if (groupAclError) {
+                if (isMissingTableError(groupAclError)) {
+                    console.warn('document_acl table missing; skipping group ACL lookup');
+                } else {
+                    console.error('Fetch document ACL (group) error:', groupAclError);
+                    return res.status(500).json({
+                        error: 'Internal Server Error',
+                        message: groupAclError.message
+                    });
+                }
+            }
+
+            groupAclDocs?.forEach(entry => accessibleDocIds.add(entry.document_id));
+        }
+
+        ownDocIds.forEach(id => accessibleDocIds.delete(id));
+
+        let sharedDocs = [];
+
+        if (accessibleDocIds.size) {
+            const sharedIds = Array.from(accessibleDocIds);
+            const sharedQuery = applyFilters(
+                supabase
+                    .from('documents')
+                    .select(DOCUMENT_SELECT)
+                    .in('id', sharedIds)
+            );
+
+            const { data: sharedData, error: sharedError } = await sharedQuery;
+            if (sharedError) {
+                console.error('Fetch shared documents error:', sharedError);
+                return res.status(500).json({
+                    error: 'Internal Server Error',
+                    message: sharedError.message
+                });
+            }
+
+            if (sharedData?.length) {
+                sharedDocs = [];
+                for (const doc of sharedData) {
+                    const allowed = await hasDocumentAccess(userId, userEmail, doc, 'view');
+                    if (allowed) {
+                        sharedDocs.push(doc);
+                    }
+                }
+            }
+        }
+
+        const allDocuments = [...(ownDocs || []), ...sharedDocs];
+        allDocuments.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
         return res.status(200).json({
             success: true,
-            data: data,
-            count: data.length
+            data: allDocuments,
+            count: allDocuments.length
         });
 
     } catch (error) {
@@ -248,22 +446,12 @@ const getAllDocuments = async (req, res) => {
  */
 const getDocumentById = async (req, res) => {
     try {
-        const { id } = req.params;
-        const userId = req.user.id;
+    const { id } = req.params;
 
         const { data, error } = await supabase
             .from('documents')
-            .select(`
-                *,
-                categories:category_id (
-                    id,
-                    name,
-                    color,
-                    description
-                )
-            `)
+            .select(DOCUMENT_SELECT)
             .eq('id', id)
-            .eq('created_by', userId)
             .single();
 
         if (error) {
@@ -306,15 +494,21 @@ const getDownloadUrl = async (req, res) => {
         // Kiểm tra quyền truy cập
         const { data: document, error: docError } = await supabase
             .from('documents')
-            .select('file_path')
+            .select('file_path, is_protected, password_hash')
             .eq('id', id)
-            .eq('created_by', userId)
             .single();
 
         if (docError || !document) {
             return res.status(404).json({
                 error: 'Not Found',
                 message: 'Document not found'
+            });
+        }
+
+        if (document.is_protected && document.password_hash) {
+            return res.status(403).json({
+                error: 'Forbidden',
+                message: 'Document is password protected'
             });
         }
 
@@ -358,18 +552,23 @@ const updateDocument = async (req, res) => {
         const { title, description, category_id, tags } = req.body;
         const userId = req.user.id;
 
-        // Kiểm tra document có tồn tại
         const { data: existingDoc, error: checkError } = await supabase
             .from('documents')
-            .select('*')
+            .select('id, created_by, group_id')
             .eq('id', id)
-            .eq('created_by', userId)
             .single();
 
         if (checkError || !existingDoc) {
-            return res.status(404).json({
-                error: 'Not Found',
-                message: 'Document not found'
+            if (checkError?.code === 'PGRST116') {
+                return res.status(404).json({
+                    error: 'Not Found',
+                    message: 'Document not found'
+                });
+            }
+            console.error('Fetch document before update error:', checkError);
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: checkError?.message || 'Failed to fetch document'
             });
         }
 
@@ -386,7 +585,6 @@ const updateDocument = async (req, res) => {
             .from('documents')
             .update(updateData)
             .eq('id', id)
-            .eq('created_by', userId)
             .select()
             .single();
 
@@ -414,6 +612,248 @@ const updateDocument = async (req, res) => {
 };
 
 /**
+ * Đặt mật khẩu bảo vệ tài liệu
+ * POST /api/documents/:id/protect
+ */
+const setDocumentPassword = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { password } = req.body;
+        const userId = req.user.id;
+
+        if (!password || typeof password !== 'string') {
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: 'Password is required'
+            });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: 'Password must be at least 6 characters'
+            });
+        }
+
+        const passwordHash = crypto.createHash('sha256').update(password).digest('hex');
+
+        const { data: existingDoc, error: fetchError } = await supabase
+            .from('documents')
+            .select('id')
+            .eq('id', id)
+            .single();
+
+        if (fetchError || !existingDoc) {
+            if (fetchError?.code === 'PGRST116') {
+                return res.status(404).json({
+                    error: 'Not Found',
+                    message: 'Document not found'
+                });
+            }
+            console.error('Fetch document before protect error:', fetchError);
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: fetchError?.message || 'Failed to fetch document'
+            });
+        }
+
+        const { data, error } = await supabase
+            .from('documents')
+            .update({
+                is_protected: true,
+                password_hash: passwordHash,
+                last_edited_by: userId
+            })
+            .eq('id', id)
+            .select('id, is_protected')
+            .single();
+
+        if (error) {
+            console.error('Set document password error:', error);
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: error.message
+            });
+        }
+
+        await supabase
+            .from('activity_logs')
+            .insert([{
+                user_id: userId,
+                activity_type: 'document_password_set',
+                metadata: { document_id: id }
+            }]);
+
+        return res.status(200).json({
+            success: true,
+            data,
+            message: 'Password protected successfully'
+        });
+
+    } catch (error) {
+        console.error('Set document password error:', error);
+        return res.status(500).json({
+            error: 'Internal Server Error',
+            message: 'Failed to protect document'
+        });
+    }
+};
+
+/**
+ * Gỡ mật khẩu bảo vệ tài liệu
+ * DELETE /api/documents/:id/protect
+ */
+const removeDocumentPassword = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const userId = req.user.id;
+
+        const { data: existingDoc, error: fetchError } = await supabase
+            .from('documents')
+            .select('id')
+            .eq('id', id)
+            .single();
+
+        if (fetchError || !existingDoc) {
+            if (fetchError?.code === 'PGRST116') {
+                return res.status(404).json({
+                    error: 'Not Found',
+                    message: 'Document not found'
+                });
+            }
+            console.error('Fetch document before remove password error:', fetchError);
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: fetchError?.message || 'Failed to fetch document'
+            });
+        }
+
+        const { data, error } = await supabase
+            .from('documents')
+            .update({
+                is_protected: false,
+                password_hash: null,
+                last_edited_by: userId
+            })
+            .eq('id', id)
+            .select('id, is_protected')
+            .single();
+
+        if (error) {
+            console.error('Remove document password error:', error);
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: error.message
+            });
+        }
+
+        await supabase
+            .from('activity_logs')
+            .insert([{
+                user_id: userId,
+                activity_type: 'document_password_removed',
+                metadata: { document_id: id }
+            }]);
+
+        return res.status(200).json({
+            success: true,
+            data,
+            message: 'Password protection removed'
+        });
+
+    } catch (error) {
+        console.error('Remove document password error:', error);
+        return res.status(500).json({
+            error: 'Internal Server Error',
+            message: 'Failed to remove password'
+        });
+    }
+};
+
+/**
+ * Mở khóa tài liệu bằng mật khẩu
+ * POST /api/documents/:id/unlock
+ */
+const unlockDocument = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { password } = req.body;
+        const userId = req.user.id;
+
+        if (!password || typeof password !== 'string') {
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: 'Password is required'
+            });
+        }
+
+        const { data: document, error: docError } = await supabase
+            .from('documents')
+            .select('password_hash, is_protected, file_path')
+            .eq('id', id)
+            .single();
+
+        if (docError || !document) {
+            return res.status(404).json({
+                error: 'Not Found',
+                message: 'Document not found'
+            });
+        }
+
+        if (!document.is_protected || !document.password_hash) {
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: 'Document is not password protected'
+            });
+        }
+
+        const passwordHash = crypto.createHash('sha256').update(password).digest('hex');
+
+        if (passwordHash !== document.password_hash) {
+            return res.status(401).json({
+                error: 'Unauthorized',
+                message: 'Invalid password'
+            });
+        }
+
+        const { data, error } = await supabase.storage
+            .from('documents')
+            .createSignedUrl(document.file_path, 3600);
+
+        if (error) {
+            console.error('Create signed URL error:', error);
+            return res.status(400).json({
+                error: 'Bad Request',
+                message: error.message
+            });
+        }
+
+        await supabase
+            .from('activity_logs')
+            .insert([{
+                user_id: userId,
+                activity_type: 'document_unlocked',
+                metadata: { document_id: id }
+            }]);
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                url: data.signedUrl,
+                expiresIn: 3600
+            }
+        });
+
+    } catch (error) {
+        console.error('Unlock document error:', error);
+        return res.status(500).json({
+            error: 'Internal Server Error',
+            message: 'Failed to unlock document'
+        });
+    }
+};
+
+/**
  * Xóa document
  * DELETE /api/documents/:id
  */
@@ -425,9 +865,8 @@ const deleteDocument = async (req, res) => {
         // Lấy thông tin document
         const { data: document, error: getError } = await supabase
             .from('documents')
-            .select('file_path')
+            .select('file_path, is_protected, password_hash')
             .eq('id', id)
-            .eq('created_by', userId)
             .single();
 
         if (getError || !document) {
@@ -435,6 +874,26 @@ const deleteDocument = async (req, res) => {
                 error: 'Not Found',
                 message: 'Document not found'
             });
+        }
+
+        if (document.is_protected && document.password_hash) {
+            const { password } = req.body || {};
+
+            if (!password || typeof password !== 'string') {
+                return res.status(403).json({
+                    error: 'Forbidden',
+                    message: 'Password is required to delete this document'
+                });
+            }
+
+            const passwordHash = crypto.createHash('sha256').update(password).digest('hex');
+
+            if (passwordHash !== document.password_hash) {
+                return res.status(403).json({
+                    error: 'Forbidden',
+                    message: 'Invalid password'
+                });
+            }
         }
 
         // Xóa file từ storage
@@ -450,8 +909,7 @@ const deleteDocument = async (req, res) => {
         const { error } = await supabase
             .from('documents')
             .delete()
-            .eq('id', id)
-            .eq('created_by', userId);
+            .eq('id', id);
 
         if (error) {
             console.error('Delete document error:', error);
@@ -621,6 +1079,9 @@ module.exports = {
     updateDocument,
     deleteDocument,
     getDocumentsByCategory,
-    searchDocuments
+    searchDocuments,
+    setDocumentPassword,
+    removeDocumentPassword,
+    unlockDocument
 };
 

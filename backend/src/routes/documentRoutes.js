@@ -9,11 +9,12 @@ const {
     getDownloadUrl,
     updateDocument,
     deleteDocument,
-    getDocumentsByCategory
+    getDocumentsByCategory,
+    setDocumentPassword,
+    removeDocumentPassword,
+    unlockDocument
 } = require('../controllers/documentController');
 const { requireDocumentPermission } = require('../middleware/acl');
-
-const { acceptInvite } = require('../controllers/inviteController');
 
 // Tất cả routes đều cần authentication
 router.use(authenticateUser);
@@ -23,13 +24,13 @@ router.post('/upload', upload.single('file'), uploadDocument);
 router.get('/', getAllDocuments);
 router.get('/by-category', getDocumentsByCategory);
 // Document access routes guarded by ACL middleware
-router.get('/:id', requireDocumentPermission('viewer'), getDocumentById);
-router.get('/:id/download', requireDocumentPermission('viewer'), getDownloadUrl);
-router.put('/:id', requireDocumentPermission('admin'), updateDocument);
+router.get('/:id', requireDocumentPermission('view'), getDocumentById);
+router.get('/:id/download', requireDocumentPermission('view'), getDownloadUrl);
+router.put('/:id', requireDocumentPermission('edit'), updateDocument);
 router.delete('/:id', requireDocumentPermission('admin'), deleteDocument);
-
-// Invite accept (open to authenticated users)
-router.post('/invites/accept', acceptInvite);
+router.post('/:id/protect', requireDocumentPermission('admin'), setDocumentPassword);
+router.delete('/:id/protect', requireDocumentPermission('admin'), removeDocumentPassword);
+router.post('/:id/unlock', requireDocumentPermission('view'), unlockDocument);
 
 module.exports = router;
 

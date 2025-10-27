@@ -82,23 +82,10 @@ const getGroupById = async (req, res) => {
             });
         }
 
-        // Get group details with members
+        // Get group details
         const { data: group, error } = await supabase
             .from('groups')
-            .select(`
-                *,
-                group_members(
-                    id,
-                    role,
-                    joined_at,
-                    is_active,
-                    user:user_id(
-                        id,
-                        email,
-                        raw_user_meta_data
-                    )
-                )
-            `)
+            .select('*')
             .eq('id', id)
             .eq('is_active', true)
             .single();
@@ -120,10 +107,60 @@ const getGroupById = async (req, res) => {
             });
         }
 
+        // Get group members separately
+        const { data: members, error: membersError } = await supabase
+            .from('group_members')
+            .select('id, role, joined_at, is_active, user_id')
+            .eq('group_id', id)
+            .eq('is_active', true);
+
+        if (membersError) {
+            console.warn('Error fetching group members:', membersError);
+        }
+
+        // Fetch user profiles for members
+        let membersWithUsers = [];
+        if (members && members.length > 0) {
+            const userIds = members.map(m => m.user_id);
+            const { data: profiles } = await supabase
+                .from('profiles')
+                .select('id, username, full_name, avatar_url')
+                .in('id', userIds);
+
+            // Get emails from auth admin API
+            let authUsers = [];
+            try {
+                const { data: { users } = {}, error: authError } = await supabase.auth.admin.listUsers();
+                if (authError) {
+                    console.warn('Error fetching auth users:', authError);
+                } else {
+                    authUsers = users || [];
+                }
+            } catch (authErr) {
+                console.warn('Error calling auth admin API:', authErr);
+            }
+
+            membersWithUsers = members.map(member => {
+                const profile = profiles?.find(p => p.id === member.user_id);
+                const authUser = authUsers.find(u => u.id === member.user_id);
+                return {
+                    ...member,
+                    user: profile ? {
+                        id: profile.id,
+                        email: authUser?.email || null,
+                        username: profile.username,
+                        full_name: profile.full_name,
+                        avatar_url: profile.avatar_url
+                    } : null
+                };
+            });
+        }
+
         res.json({
             success: true,
             data: {
                 ...group,
+                group_members: membersWithUsers,
                 user_role: membership.role
             }
         });

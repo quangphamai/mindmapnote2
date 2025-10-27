@@ -17,6 +17,12 @@ const {
     leaveGroup
 } = require('../controllers/groupMemberController');
 const { createInvite } = require('../controllers/inviteController');
+const {
+    getGroupDocuments,
+    addGroupDocument,
+    updateGroupDocumentAccess,
+    removeGroupDocument
+} = require('../controllers/groupDocumentController');
 
 const router = express.Router();
 
@@ -39,5 +45,10 @@ router.delete('/:groupId/members/:memberId', removeGroupMember);     // DELETE /
 router.post('/:groupId/leave', leaveGroup);                          // POST /api/groups/:groupId/leave
 // Invite endpoints
 router.post('/:groupId/invites', createInvite);                      // POST /api/groups/:groupId/invites
+// Group documents
+router.get('/:groupId/documents', getGroupDocuments);                 // GET /api/groups/:groupId/documents
+router.post('/:groupId/documents', addGroupDocument);                 // POST /api/groups/:groupId/documents
+router.put('/:groupId/documents/:documentId', updateGroupDocumentAccess); // PUT /api/groups/:groupId/documents/:documentId
+router.delete('/:groupId/documents/:documentId', removeGroupDocument);    // DELETE /api/groups/:groupId/documents/:documentId
 
 module.exports = router;

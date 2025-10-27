@@ -54,17 +54,40 @@ const createInvite = async (req, res) => {
  */
 const acceptInvite = async (req, res) => {
     try {
-        const { token } = req.body;
+        const { token, inviteId } = req.body;
         const userId = req.user?.id;
+        const userEmail = req.user?.email?.toLowerCase();
 
-        if (!token) return res.status(400).json({ success: false, error: 'Validation error', message: 'Token is required' });
+        if (!token && !inviteId) {
+            return res.status(400).json({ success: false, error: 'Validation error', message: 'Token or inviteId is required' });
+        }
 
-        const { data: invite, error: inviteError } = await supabase
-            .from('invites')
-            .select('*')
-            .eq('token', token)
-            .eq('used', false)
-            .single();
+        let invite = null;
+        let inviteError = null;
+
+        if (token) {
+            const result = await supabase
+                .from('invites')
+                .select('*')
+                .eq('token', token)
+                .eq('used', false)
+                .single();
+            invite = result.data;
+            inviteError = result.error;
+        } else if (inviteId) {
+            const result = await supabase
+                .from('invites')
+                .select('*')
+                .eq('id', inviteId)
+                .eq('used', false)
+                .single();
+            invite = result.data;
+            inviteError = result.error;
+
+            if (!result.error && invite && userEmail && invite.email.toLowerCase() !== userEmail) {
+                return res.status(403).json({ success: false, error: 'Access denied', message: 'Invite does not belong to your account' });
+            }
+        }
 
         if (inviteError || !invite) return res.status(400).json({ success: false, error: 'Invalid token', message: 'Invite not found or already used' });
 
@@ -72,19 +95,37 @@ const acceptInvite = async (req, res) => {
             return res.status(400).json({ success: false, error: 'Expired', message: 'Invite token has expired' });
         }
 
-        // If user not logged in, try to find by email in auth.users
+        // If user not logged in, try to find by email using auth admin API
         let targetUserId = userId;
         if (!targetUserId) {
-            const { data: authUser, error: authError } = await supabase
-                .from('auth.users')
-                .select('id, email')
-                .eq('email', invite.email)
-                .single();
-
-            if (authError || !authUser) {
-                return res.status(400).json({ success: false, error: 'User not found', message: 'Please sign up or login using the invited email' });
+            try {
+                const { data: { users } = {}, error: authError } = await supabase.auth.admin.listUsers();
+                if (authError) {
+                    console.error('Error fetching users from auth:', authError);
+                    return res.status(500).json({ 
+                        success: false, 
+                        error: 'Failed to verify user', 
+                        message: authError.message 
+                    });
+                }
+                
+                const authUser = users?.find(u => u.email?.toLowerCase() === invite.email.toLowerCase());
+                if (!authUser) {
+                    return res.status(400).json({ 
+                        success: false, 
+                        error: 'User not found', 
+                        message: 'Please sign up or login using the invited email' 
+                    });
+                }
+                targetUserId = authUser.id;
+            } catch (authErr) {
+                console.error('Error calling auth admin API:', authErr);
+                return res.status(500).json({ 
+                    success: false, 
+                    error: 'Failed to verify user', 
+                    message: authErr.message 
+                });
             }
-            targetUserId = authUser.id;
         }
 
         // Add member to group if not already

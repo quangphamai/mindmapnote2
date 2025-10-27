@@ -30,21 +30,10 @@ const getGroupMembers = async (req, res) => {
             });
         }
 
-        // Get all members with user details
+        // Get all members
         const { data: members, error } = await supabase
             .from('group_members')
-            .select(`
-                id,
-                role,
-                joined_at,
-                is_active,
-                invited_by,
-                user:user_id(
-                    id,
-                    email,
-                    raw_user_meta_data
-                )
-            `)
+            .select('id, role, joined_at, is_active, invited_by, user_id')
             .eq('group_id', groupId)
             .eq('is_active', true)
             .order('joined_at', { ascending: false });
@@ -58,10 +47,50 @@ const getGroupMembers = async (req, res) => {
             });
         }
 
+        // Fetch user details separately
+        const userIds = members.map(m => m.user_id);
+        const { data: profiles, error: profilesError } = await supabase
+            .from('profiles')
+            .select('id, username, full_name, avatar_url')
+            .in('id', userIds);
+
+        if (profilesError) {
+            console.warn('Error fetching user profiles:', profilesError);
+        }
+
+        // Get emails from auth admin API (requires service role key)
+        let authUsers = [];
+        try {
+            const { data: { users } = {}, error: authError } = await supabase.auth.admin.listUsers();
+            if (authError) {
+                console.warn('Error fetching auth users:', authError);
+            } else {
+                authUsers = users || [];
+            }
+        } catch (authErr) {
+            console.warn('Error calling auth admin API:', authErr);
+        }
+
+        // Merge user data with members
+        const membersWithUsers = members.map(member => {
+            const profile = profiles?.find(p => p.id === member.user_id);
+            const authUser = authUsers.find(u => u.id === member.user_id);
+            return {
+                ...member,
+                user: profile ? {
+                    id: profile.id,
+                    email: authUser?.email || null,
+                    username: profile.username,
+                    full_name: profile.full_name,
+                    avatar_url: profile.avatar_url
+                } : null
+            };
+        });
+
         res.json({
             success: true,
-            data: members,
-            count: members.length
+            data: membersWithUsers,
+            count: membersWithUsers.length
         });
     } catch (error) {
         console.error('Get group members error:', error);
@@ -115,14 +144,30 @@ const addGroupMember = async (req, res) => {
             });
         }
 
-        // Find user by email
-        const { data: targetUser, error: userError } = await supabase
-            .from('auth.users')
-            .select('id, email')
-            .eq('email', userEmail)
-            .single();
+        // Find user by email using auth admin API
+        let targetUser = null;
+        try {
+            const { data: { users } = {}, error: authError } = await supabase.auth.admin.listUsers();
+            if (authError) {
+                console.error('Error fetching users from auth:', authError);
+                return res.status(500).json({
+                    success: false,
+                    error: 'Failed to search for user',
+                    message: authError.message
+                });
+            }
+            
+            targetUser = users?.find(u => u.email?.toLowerCase() === userEmail.toLowerCase());
+        } catch (authErr) {
+            console.error('Error calling auth admin API:', authErr);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to search for user',
+                message: authErr.message
+            });
+        }
 
-        if (userError || !targetUser) {
+        if (!targetUser) {
             return res.status(404).json({
                 success: false,
                 error: 'User not found',
