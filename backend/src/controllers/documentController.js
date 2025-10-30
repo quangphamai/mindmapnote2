@@ -3,6 +3,7 @@ const { hasDocumentAccess } = require('../middleware/acl');
 const multer = require('multer');
 const path = require('path');
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 
 /**
  * Cấu hình multer để xử lý upload files
@@ -72,6 +73,118 @@ const upload = multer({
         }
     }
 });
+
+/**
+ * Chạy Python embedding pipeline cho document vừa upload
+ * 
+ * Function này sẽ:
+ * 1. Download file từ Supabase Storage
+ * 2. Extract text (PDF, DOCX, etc.)
+ * 3. Chunk văn bản thành các đoạn nhỏ
+ * 4. Tạo embeddings cho mỗi chunk (sentence-transformers)
+ * 5. Lưu chunks + embeddings vào bảng document_embeddings
+ * 
+ * @param {string} documentId - UUID của document trong database
+ * @returns {Promise<{success: boolean, message?: string, error?: string}>}
+ */
+async function runEmbedding(documentId) {
+    return new Promise((resolve) => {
+        try {
+            // Lấy đường dẫn Python executable và script ingest_document.py
+            const pythonExe = process.env.RAG_PYTHON_PATH || 'python';
+            const ingestScript = path.resolve(__dirname, '../../../../Embedding_langchain/scripts/ingest_document.py');
+            const embeddingCwd = path.resolve(__dirname, '../../../../Embedding_langchain');
+            
+            // Timeout 5 phút (300 giây) - đủ cho file PDF lớn
+            const timeoutMs = parseInt(process.env.EMBEDDING_TIMEOUT_MS || '300000', 10);
+
+            console.log('[EMBEDDING] Bắt đầu embedding cho document:', documentId);
+            console.log('[EMBEDDING] Python executable:', pythonExe);
+            console.log('[EMBEDDING] Ingest script:', ingestScript);
+            console.log('[EMBEDDING] Working directory:', embeddingCwd);
+
+            // Spawn Python process với argument là document_id
+            // Command: python ingest_document.py <document_id>
+            const child = spawn(pythonExe, [ingestScript, documentId], {
+                cwd: embeddingCwd,
+                env: {
+                    ...process.env,
+                    PYTHONIOENCODING: 'utf-8',  // UTF-8 encoding cho I/O
+                    PYTHONUTF8: '1'              // UTF-8 mode trên Windows
+                },
+                stdio: ['pipe', 'pipe', 'pipe']  // stdin, stdout, stderr
+            });
+
+            let stdout = '';
+            let stderr = '';
+            let timeoutHandle;
+
+            // Lắng nghe stdout từ Python
+            child.stdout.on('data', (data) => {
+                const chunk = data.toString();
+                console.log('[EMBEDDING stdout]', chunk);
+                stdout += chunk;
+            });
+
+            // Lắng nghe stderr từ Python (có thể là progress logs hoặc errors)
+            child.stderr.on('data', (data) => {
+                const chunk = data.toString();
+                console.error('[EMBEDDING stderr]', chunk);
+                stderr += chunk;
+            });
+
+            // Timeout handler - kill process nếu chạy quá lâu
+            timeoutHandle = setTimeout(() => {
+                console.error('[EMBEDDING] TIMEOUT sau', timeoutMs, 'ms');
+                child.kill();
+                resolve({
+                    success: false,
+                    error: `Embedding timeout sau ${timeoutMs / 1000}s`
+                });
+            }, timeoutMs);
+
+            // Xử lý lỗi spawn process
+            child.on('error', (err) => {
+                clearTimeout(timeoutHandle);
+                console.error('[EMBEDDING] Lỗi start Python process:', err);
+                resolve({
+                    success: false,
+                    error: `Lỗi khởi động embedding process: ${err.message}`
+                });
+            });
+
+            // Xử lý khi Python process kết thúc
+            child.on('close', (code) => {
+                clearTimeout(timeoutHandle);
+                console.log('[EMBEDDING] Process đóng với code:', code);
+                
+                if (code === 0) {
+                    // Thành công
+                    console.log('[EMBEDDING] ✅ Embedding thành công cho document:', documentId);
+                    resolve({
+                        success: true,
+                        message: 'Embedding completed successfully'
+                    });
+                } else {
+                    // Thất bại
+                    console.error('[EMBEDDING] ❌ Embedding thất bại với code:', code);
+                    console.error('[EMBEDDING] stderr:', stderr);
+                    resolve({
+                        success: false,
+                        error: stderr || `Process thoát với code ${code}`
+                    });
+                }
+            });
+
+        } catch (error) {
+            console.error('[EMBEDDING] Exception:', error);
+            resolve({
+                success: false,
+                error: error.message
+            });
+        }
+    });
+}
 
 /**
  * Upload document
@@ -237,10 +350,65 @@ const uploadDocument = async (req, res) => {
                 }
             }]);
 
+        // AUTO EMBEDDING: Tự động tạo embeddings cho document vừa upload
+        // Chỉ embedding cho các file types hỗ trợ text extraction (PDF, DOCX, TXT, MD)
+        const embeddableTypes = [
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'text/plain',
+            'text/markdown'
+        ];
+
+        let embeddingResult = null;
+        if (embeddableTypes.includes(file.mimetype)) {
+            console.log('[UPLOAD] Document có thể embedding, bắt đầu process...');
+            
+            // Chạy embedding trong background (không đợi kết quả)
+            // Nếu muốn đợi: await runEmbedding(data.id)
+            // Nếu không đợi: runEmbedding(data.id).catch(err => console.error(...))
+            
+            // OPTION: Đợi embedding xong mới response (đồng bộ)
+            // User sẽ đợi 3-10s nhưng đảm bảo document sẵn sàng cho RAG ngay
+            embeddingResult = await runEmbedding(data.id);
+            
+            if (embeddingResult.success) {
+                console.log('[UPLOAD] ✅ Embedding thành công');
+            } else {
+                // Embedding thất bại KHÔNG ảnh hưởng upload
+                // Document vẫn được lưu, chỉ không có embeddings
+                console.error('[UPLOAD] ⚠️ Embedding thất bại:', embeddingResult.error);
+                console.error('[UPLOAD] Document đã upload nhưng chưa có embeddings');
+                // Có thể log vào database để retry sau
+                await supabase
+                    .from('activity_logs')
+                    .insert([{
+                        user_id: userId,
+                        activity_type: 'embedding_failed',
+                        metadata: {
+                            document_id: data.id,
+                            error: embeddingResult.error
+                        }
+                    }]);
+            }
+        } else {
+            console.log('[UPLOAD] File type không hỗ trợ embedding:', file.mimetype);
+        }
+
+        // Response bao gồm thông tin embedding status
         return res.status(201).json({
             success: true,
             data: data,
-            message: 'Document uploaded successfully'
+            message: 'Document uploaded successfully',
+            embedding: embeddingResult ? {
+                completed: embeddingResult.success,
+                message: embeddingResult.success 
+                    ? 'Embeddings created successfully' 
+                    : `Embedding failed: ${embeddingResult.error}`,
+            } : {
+                completed: false,
+                message: 'File type not supported for embedding'
+            }
         });
 
     } catch (error) {

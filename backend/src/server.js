@@ -10,6 +10,7 @@ const searchRoutes = require('./routes/searchRoutes');
 const groupRoutes = require('./routes/groupRoutes');
 const inviteRoutes = require('./routes/inviteRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
+const ragRoutes = require('./routes/ragRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -73,6 +74,7 @@ app.use('/api/search', searchRoutes);
 app.use('/api/groups', groupRoutes);
 app.use('/api/invites', inviteRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/rag', ragRoutes);
 
 // 404 handler
 app.use((req, res) => {
