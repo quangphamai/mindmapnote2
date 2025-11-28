@@ -10,7 +10,7 @@ const getAllCategories = async (req, res) => {
 
     const { data, error } = await supabase
       .from('categories')
-      .select('*')
+      .select('id, name, description, color, group_id, parent_id, level, path, created_by, created_at, updated_at')
       .eq('created_by', userId)
       .order('created_at', { ascending: false });
 
@@ -82,11 +82,11 @@ const getCategoryById = async (req, res) => {
 /**
  * Tạo category mới
  * POST /api/categories
- * Body: { name, description?, color?, group_id? }
+ * Body: { name, description?, color?, group_id?, parent_id? }
  */
 const createCategory = async (req, res) => {
   try {
-    const { name, description, color, group_id } = req.body;
+    const { name, description, color, group_id, parent_id } = req.body;
     const userId = req.user.id;
 
     // Validate required fields
@@ -102,7 +102,8 @@ const createCategory = async (req, res) => {
       created_by: userId,
       description: description || null,
       color: color || '#3b82f6',
-      group_id: group_id || null
+      group_id: group_id || null,
+      parent_id: parent_id || null
     };
 
     const { data, error } = await supabase
@@ -145,12 +146,12 @@ const createCategory = async (req, res) => {
 /**
  * Cập nhật category
  * PUT /api/categories/:id
- * Body: { name?, description?, color?, group_id? }
+ * Body: { name?, description?, color?, group_id?, parent_id? }
  */
 const updateCategory = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, description, color, group_id } = req.body;
+    const { name, description, color, group_id, parent_id } = req.body;
     const userId = req.user.id;
 
     // Kiểm tra category có tồn tại và thuộc về user không
@@ -174,6 +175,7 @@ const updateCategory = async (req, res) => {
     if (description !== undefined) updateData.description = description;
     if (color !== undefined) updateData.color = color;
     if (group_id !== undefined) updateData.group_id = group_id;
+    if (parent_id !== undefined) updateData.parent_id = parent_id;
 
     // Validate name nếu có update
     if (updateData.name && updateData.name === '') {

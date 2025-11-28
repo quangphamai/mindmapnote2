@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test RAG Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        input, textarea, button {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f9f9f9;
+            border-left: 4px solid #4CAF50;
+            white-space: pre-wrap;
+        }
+        .error {
+            border-left-color: #f44336;
+            background: #ffebee;
+        }
+        .info {
+            padding: 10px;
+            margin: 10px 0;
+            background: #e3f2fd;
+            border-radius: 5px;
+            font-size: 13px;
+        }
+        label {
+            font-weight: bold;
+            display: block;
+            margin-top: 15px;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .status.success { background: #4CAF50; color: white; }
+        .status.error { background: #f44336; color: white; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 Test RAG Chat Function</h1>
+        
+        <div class="info">
+            <strong>Hướng dẫn:</strong>
+            <ol>
+                <li>Đăng nhập vào ứng dụng tại <a href="http://localhost:5174" target="_blank">http://localhost:5174</a></li>
+                <li>Mở DevTools (F12) → Console</li>
+                <li>Chạy: <code>localStorage.getItem('supabase.auth.token')</code></li>
+                <li>Copy access_token từ JSON và paste vào ô dưới đây</li>
+            </ol>
+        </div>
+
+        <label>Access Token:</label>
+        <input type="password" id="accessToken" placeholder="Paste your access token here...">
+        
+        <label>User ID:</label>
+        <input type="text" id="userId" placeholder="Enter your user ID...">
+
+        <label>API Key (Lovable AI):</label>
+        <input type="password" id="apiKey" placeholder="Optional: Your Lovable AI API key...">
+
+        <label>Question/Query:</label>
+        <textarea id="query" rows="3" placeholder="Nhập câu hỏi của bạn...">Xin chào, bạn có thể giúp tôi tìm thông tin gì?</textarea>
+
+        <label>Model:</label>
+        <select id="model" style="padding: 10px;">
+            <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
+            <option value="google/gemini-2.5-pro">Gemini 2.5 Pro</option>
+            <option value="openai/gpt-5-mini">GPT-5 Mini</option>
+            <option value="openai/gpt-5">GPT-5</option>
+        </select>
+
+        <button onclick="testRagChat()" id="testBtn">Test RAG Chat</button>
+        <button onclick="getAuthInfo()" style="background: #2196F3; margin-top: 5px;">Get Auth Info from LocalStorage</button>
+
+        <div id="result"></div>
+    </div>
+
+    <script>
+        function getAuthInfo() {
+            const resultDiv = document.getElementById('result');
+            try {
+                // Try to get auth data from localStorage
+                const authKeys = Object.keys(localStorage).filter(k => k.includes('supabase'));
+                
+                if (authKeys.length === 0) {
+                    resultDiv.innerHTML = '<div class="result error">Không tìm thấy auth data trong localStorage. Hãy đăng nhập trước!</div>';
+                    return;
+                }
+
+                let authData = null;
+                for (const key of authKeys) {
+                    try {
+                        const data = JSON.parse(localStorage.getItem(key));
+                        if (data.access_token || data.user) {
+                            authData = data;
+                            break;
+                        }
+                    } catch (e) {}
+                }
+
+                if (!authData) {
+                    resultDiv.innerHTML = '<div class="result error">Không thể parse auth data. Format không đúng.</div>';
+                    return;
+                }
+
+                const accessToken = authData.access_token;
+                const userId = authData.user?.id;
+
+                if (accessToken && userId) {
+                    document.getElementById('accessToken').value = accessToken;
+                    document.getElementById('userId').value = userId;
+                    resultDiv.innerHTML = '<div class="result">✅ Đã tự động điền Access Token và User ID!</div>';
+                } else {
+                    resultDiv.innerHTML = '<div class="result error">Auth data không đầy đủ: ' + JSON.stringify(authData, null, 2) + '</div>';
+                }
+            } catch (error) {
+                resultDiv.innerHTML = '<div class="result error">Error: ' + error.message + '</div>';
+            }
+        }
+
+        async function testRagChat() {
+            const resultDiv = document.getElementById('result');
+            const testBtn = document.getElementById('testBtn');
+            
+            const accessToken = document.getElementById('accessToken').value.trim();
+            const userId = document.getElementById('userId').value.trim();
+            const apiKey = document.getElementById('apiKey').value.trim();
+            const query = document.getElementById('query').value.trim();
+            const model = document.getElementById('model').value;
+
+            if (!accessToken) {
+                resultDiv.innerHTML = '<div class="result error">❌ Vui lòng nhập Access Token!</div>';
+                return;
+            }
+
+            if (!userId) {
+                resultDiv.innerHTML = '<div class="result error">❌ Vui lòng nhập User ID!</div>';
+                return;
+            }
+
+            if (!query) {
+                resultDiv.innerHTML = '<div class="result error">❌ Vui lòng nhập câu hỏi!</div>';
+                return;
+            }
+
+            testBtn.disabled = true;
+            resultDiv.innerHTML = '<div class="result">⏳ Đang gọi RAG Chat function...</div>';
+
+            try {
+                const url = 'https://cysokmjkkmitxzagoqjh.supabase.co/functions/v1/rag-chat';
+                
+                const headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${accessToken}`,
+                    'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN5c29rbWpra21pdHh6YWdvcWpoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTg5OTAwMTIsImV4cCI6MjA3NDU2NjAxMn0.ZwXun6HYJ8HtjF-r0JBv5lCZoTPwMGAyZv01jZzP8Gs'
+                };
+
+                const body = JSON.stringify({
+                    query: query,
+                    model: model,
+                    userId: userId,
+                    apiKey: apiKey || undefined
+                });
+
+                console.log('Request URL:', url);
+                console.log('Request Headers:', headers);
+                console.log('Request Body:', body);
+
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: headers,
+                    body: body
+                });
+
+                const responseText = await response.text();
+                console.log('Response Status:', response.status);
+                console.log('Response Text:', responseText);
+
+                let responseData;
+                try {
+                    responseData = JSON.parse(responseText);
+                } catch (e) {
+                    responseData = { raw: responseText };
+                }
+
+                if (response.ok) {
+                    resultDiv.innerHTML = `
+                        <div class="result">
+                            <strong>✅ SUCCESS <span class="status success">Status: ${response.status}</span></strong>
+                            <hr style="margin: 15px 0;">
+                            <strong>Answer:</strong>
+                            <p>${responseData.answer || 'No answer'}</p>
+                            ${responseData.sources && responseData.sources.length > 0 ? `
+                                <hr style="margin: 15px 0;">
+                                <strong>Sources (${responseData.sources.length}):</strong>
+                                <ul>${responseData.sources.map(s => `<li>${s.title} (ID: ${s.id})</li>`).join('')}</ul>
+                            ` : ''}
+                            <hr style="margin: 15px 0;">
+                            <details>
+                                <summary style="cursor: pointer; font-weight: bold;">Raw Response</summary>
+                                <pre>${JSON.stringify(responseData, null, 2)}</pre>
+                            </details>
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `
+                        <div class="result error">
+                            <strong>❌ ERROR <span class="status error">Status: ${response.status}</span></strong>
+                            <hr style="margin: 15px 0;">
+                            <strong>Error Message:</strong>
+                            <p>${responseData.error || responseData.message || 'Unknown error'}</p>
+                            <hr style="margin: 15px 0;">
+                            <details>
+                                <summary style="cursor: pointer; font-weight: bold;">Full Response</summary>
+                                <pre>${JSON.stringify(responseData, null, 2)}</pre>
+                            </details>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Test error:', error);
+                resultDiv.innerHTML = `
+                    <div class="result error">
+                        <strong>❌ EXCEPTION</strong>
+                        <hr style="margin: 15px 0;">
+                        <p>${error.message}</p>
+                        <pre>${error.stack}</pre>
+                    </div>
+                `;
+            } finally {
+                testBtn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
