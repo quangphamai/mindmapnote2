@@ -12,6 +12,7 @@ const getGroupMembers = async (req, res) => {
     try {
         const { groupId } = req.params;
         const userId = req.user.id;
+        const { page = 1, limit = 20, search, role } = req.query;
 
         // Check if user is member of the group
         const { data: membership, error: membershipError } = await supabase
@@ -30,13 +31,26 @@ const getGroupMembers = async (req, res) => {
             });
         }
 
-        // Get all members
-        const { data: members, error } = await supabase
+        // Build query with filters
+        let query = supabase
             .from('group_members')
-            .select('id, role, joined_at, is_active, invited_by, user_id')
+            .select('id, role, joined_at, is_active, invited_by, user_id', { count: 'exact' })
             .eq('group_id', groupId)
-            .eq('is_active', true)
-            .order('joined_at', { ascending: false });
+            .eq('is_active', true);
+
+        // Apply role filter if provided
+        if (role) {
+            query = query.eq('role', role);
+        }
+
+        // Apply pagination
+        const offset = (page - 1) * limit;
+        query = query.range(offset, offset + limit - 1);
+
+        // Order by joined_at (newest first)
+        query = query.order('joined_at', { ascending: false });
+
+        const { data: members, error, count } = await query;
 
         if (error) {
             console.error('Error fetching group members:', error);
@@ -72,7 +86,7 @@ const getGroupMembers = async (req, res) => {
         }
 
         // Merge user data with members
-        const membersWithUsers = members.map(member => {
+        let membersWithUsers = members.map(member => {
             const profile = profiles?.find(p => p.id === member.user_id);
             const authUser = authUsers.find(u => u.id === member.user_id);
             return {
@@ -87,10 +101,28 @@ const getGroupMembers = async (req, res) => {
             };
         });
 
+        // Apply search filter if provided (client-side filtering for simplicity)
+        if (search) {
+            const searchLower = search.toLowerCase();
+            membersWithUsers = membersWithUsers.filter(member => {
+                if (!member.user) return false;
+                return (
+                    member.user.username?.toLowerCase().includes(searchLower) ||
+                    member.user.full_name?.toLowerCase().includes(searchLower) ||
+                    member.user.email?.toLowerCase().includes(searchLower)
+                );
+            });
+        }
+
         res.json({
             success: true,
             data: membersWithUsers,
-            count: membersWithUsers.length
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: count || 0,
+                pages: Math.ceil((count || 0) / limit)
+            }
         });
     } catch (error) {
         console.error('Get group members error:', error);
@@ -503,10 +535,214 @@ const leaveGroup = async (req, res) => {
     }
 };
 
+/**
+ * Get member statistics for a group
+ */
+const getMemberStats = async (req, res) => {
+    try {
+        const { groupId } = req.params;
+        const userId = req.user.id;
+
+        // Check if user is member of the group
+        const { data: membership, error: membershipError } = await supabase
+            .from('group_members')
+            .select('role')
+            .eq('group_id', groupId)
+            .eq('user_id', userId)
+            .eq('is_active', true)
+            .single();
+
+        if (membershipError || !membership) {
+            return res.status(403).json({
+                success: false,
+                error: 'Access denied',
+                message: 'You are not a member of this group'
+            });
+        }
+
+        // Get member count by role
+        const { data: roleStats, error: roleError } = await supabase
+            .from('group_members')
+            .select('role')
+            .eq('group_id', groupId)
+            .eq('is_active', true);
+
+        if (roleError) {
+            console.error('Error fetching member stats:', roleError);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to fetch member statistics',
+                message: roleError.message
+            });
+        }
+
+        // Count members by role
+        const stats = {
+            total: roleStats.length,
+            owner: 0,
+            admin: 0,
+            member: 0,
+            viewer: 0
+        };
+
+        roleStats.forEach(member => {
+            if (stats[member.role] !== undefined) {
+                stats[member.role]++;
+            }
+        });
+
+        // Get recent join activity (last 30 days)
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+        const { data: recentJoins, error: recentError } = await supabase
+            .from('group_members')
+            .select('joined_at, user_id')
+            .eq('group_id', groupId)
+            .eq('is_active', true)
+            .gte('joined_at', thirtyDaysAgo.toISOString())
+            .order('joined_at', { ascending: false });
+
+        if (recentError) {
+            console.warn('Error fetching recent joins:', recentError);
+        }
+
+        res.json({
+            success: true,
+            data: {
+                ...stats,
+                recentJoins: recentJoins?.length || 0,
+                recentJoinsList: recentJoins || []
+            }
+        });
+    } catch (error) {
+        console.error('Get member stats error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error',
+            message: error.message
+        });
+    }
+};
+
+/**
+ * Search for users to add to a group
+ */
+const searchUsers = async (req, res) => {
+    try {
+        const { groupId } = req.params;
+        const { q } = req.query;
+        const userId = req.user.id;
+
+        if (!q || q.length < 2) {
+            return res.status(400).json({
+                success: false,
+                error: 'Validation error',
+                message: 'Search query must be at least 2 characters'
+            });
+        }
+
+        // Check if user has permission to add members
+        const { data: membership, error: membershipError } = await supabase
+            .from('group_members')
+            .select('role')
+            .eq('group_id', groupId)
+            .eq('user_id', userId)
+            .eq('is_active', true)
+            .single();
+
+        if (membershipError || !membership) {
+            return res.status(403).json({
+                success: false,
+                error: 'Access denied',
+                message: 'You are not a member of this group'
+            });
+        }
+
+        if (!['owner', 'admin'].includes(membership.role)) {
+            return res.status(403).json({
+                success: false,
+                error: 'Access denied',
+                message: 'You do not have permission to add members'
+            });
+        }
+
+        // Get existing member IDs to exclude them from search
+        const { data: existingMembers, error: existingError } = await supabase
+            .from('group_members')
+            .select('user_id')
+            .eq('group_id', groupId)
+            .eq('is_active', true);
+
+        if (existingError) {
+            console.warn('Error fetching existing members:', existingError);
+        }
+
+        const existingMemberIds = existingMembers?.map(m => m.user_id) || [];
+
+        // Search for users by email or username
+        let searchResults = [];
+        try {
+            // Get all users from auth
+            const { data: { users } = {}, error: authError } = await supabase.auth.admin.listUsers();
+            if (authError) {
+                console.error('Error fetching users from auth:', authError);
+                return res.status(500).json({
+                    success: false,
+                    error: 'Failed to search for users',
+                    message: authError.message
+                });
+            }
+
+            // Filter users based on search query and exclude existing members
+            searchResults = users.filter(user => {
+                if (existingMemberIds.includes(user.id)) return false;
+                
+                const emailMatch = user.email?.toLowerCase().includes(q.toLowerCase());
+                const metadataMatch = user.user_metadata?.username?.toLowerCase().includes(q.toLowerCase()) ||
+                                    user.user_metadata?.full_name?.toLowerCase().includes(q.toLowerCase());
+                
+                return emailMatch || metadataMatch;
+            }).map(user => ({
+                id: user.id,
+                email: user.email,
+                username: user.user_metadata?.username || null,
+                full_name: user.user_metadata?.full_name || null,
+                avatar_url: user.user_metadata?.avatar_url || null
+            }));
+
+            // Limit results to 20
+            searchResults = searchResults.slice(0, 20);
+        } catch (authErr) {
+            console.error('Error calling auth admin API:', authErr);
+            return res.status(500).json({
+                success: false,
+                error: 'Failed to search for users',
+                message: authErr.message
+            });
+        }
+
+        res.json({
+            success: true,
+            data: searchResults,
+            count: searchResults.length
+        });
+    } catch (error) {
+        console.error('Search users error:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error',
+            message: error.message
+        });
+    }
+};
+
 module.exports = {
     getGroupMembers,
     addGroupMember,
     updateMemberRole,
     removeGroupMember,
-    leaveGroup
+    leaveGroup,
+    getMemberStats,
+    searchUsers
 };
