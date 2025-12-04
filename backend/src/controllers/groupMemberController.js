@@ -6,6 +6,29 @@ const { supabase } = require('../config/supabase');
  */
 
 /**
+ * Log group activity
+ * @param {string} groupId - Group ID
+ * @param {string} userId - User ID performing the action
+ * @param {string} activityType - Type of activity
+ * @param {object} metadata - Additional metadata about the activity
+ */
+const logGroupActivity = async (groupId, userId, activityType, metadata = {}) => {
+    try {
+        await supabase
+            .from('group_activity_logs')
+            .insert({
+                group_id: groupId,
+                user_id: userId,
+                activity_type: activityType,
+                metadata: metadata
+            });
+    } catch (error) {
+        console.error('Failed to log group activity:', error);
+        // Don't throw error to avoid breaking main functionality
+    }
+};
+
+/**
  * Get all members of a group
  */
 const getGroupMembers = async (req, res) => {
@@ -241,6 +264,13 @@ const addGroupMember = async (req, res) => {
                         message: updateError.message
                     });
                 }
+
+                // Log activity
+                await logGroupActivity(groupId, userId, 'member_reactivated', {
+                    target_user_id: targetUser.id,
+                    target_user_email: targetUser.email,
+                    role: role
+                });
             }
         } else {
             // Add new member
@@ -261,6 +291,13 @@ const addGroupMember = async (req, res) => {
                     message: addError.message
                 });
             }
+
+            // Log activity
+            await logGroupActivity(groupId, userId, 'member_added', {
+                target_user_id: targetUser.id,
+                target_user_email: targetUser.email,
+                role: role
+            });
         }
 
         res.status(201).json({
@@ -360,6 +397,13 @@ const updateMemberRole = async (req, res) => {
             });
         }
 
+        // Log activity
+        await logGroupActivity(groupId, userId, 'member_role_changed', {
+            target_user_id: targetMember.user_id,
+            old_role: targetMember.role,
+            new_role: role
+        });
+
         res.json({
             success: true,
             message: 'Member role updated successfully'
@@ -457,6 +501,13 @@ const removeGroupMember = async (req, res) => {
             });
         }
 
+        // Log activity
+        await logGroupActivity(groupId, userId, 'member_removed', {
+            target_user_id: targetMember.user_id,
+            removed_by: userId,
+            self_removed: targetMember.user_id === userId
+        });
+
         res.json({
             success: true,
             message: 'Member removed successfully'
@@ -520,6 +571,11 @@ const leaveGroup = async (req, res) => {
                 message: leaveError.message
             });
         }
+
+        // Log activity
+        await logGroupActivity(groupId, userId, 'member_left', {
+            user_id: userId
+        });
 
         res.json({
             success: true,

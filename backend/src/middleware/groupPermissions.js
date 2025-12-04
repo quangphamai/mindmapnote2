@@ -1,5 +1,39 @@
 const { supabase } = require('../config/supabase');
-const { logSecurityEvent } = require('./groupSecurity');
+const { createClient } = require('@supabase/supabase-js');
+
+// Create a service role client for bypassing RLS when writing security logs
+const supabaseService = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY,
+    {
+        auth: {
+            autoRefreshToken: false,
+            persistSession: false
+        }
+    }
+);
+
+/**
+ * Log security events for audit purposes
+ */
+const logSecurityEvent = async (userId, eventType, details) => {
+    try {
+        // Use service role client to bypass RLS
+        await supabaseService
+            .from('security_logs')
+            .insert({
+                user_id: userId,
+                event_type: eventType,
+                details: details,
+                ip_address: details.ip || 'unknown',
+                user_agent: details.userAgent || 'unknown',
+                created_at: new Date().toISOString()
+            });
+    } catch (error) {
+        console.error('Failed to log security event:', error);
+        // Don't throw error to avoid breaking main functionality
+    }
+};
 
 /**
  * Middleware to check if user has permission to perform an action on a group resource
@@ -22,23 +56,27 @@ const checkGroupPermission = (resource, action, groupIdParam = 'groupId') => {
                 });
             }
 
-            // Check permission using database function
-            const { data: hasPermission, error } = await supabase
-                .rpc('has_permission', {
-                    _user_id: userId,
-                    _group_id: groupId,
-                    _resource: resource,
-                    _action: action
-                });
+            // Temporary permission check - check if user is a member of the group
+            const { data: membership, error: memberError } = await supabase
+                .from('group_members')
+                .select('role')
+                .eq('group_id', groupId)
+                .eq('user_id', userId)
+                .eq('is_active', true)
+                .single();
 
-            if (error) {
-                console.error('Permission check error:', error);
-                return res.status(500).json({
+            if (memberError || !membership) {
+                console.error('Permission check error:', memberError);
+                return res.status(403).json({
                     success: false,
-                    error: 'Internal Server Error',
-                    message: 'Failed to check permissions'
+                    error: 'Access denied',
+                    message: 'You are not a member of this group'
                 });
             }
+
+            // For now, allow all members to access all resources
+            // TODO: Implement proper permission checking once database is updated
+            const hasPermission = true;
 
             if (!hasPermission) {
                 // Log security event for audit

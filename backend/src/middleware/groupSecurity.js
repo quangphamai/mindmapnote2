@@ -1,4 +1,17 @@
 const { supabase } = require('../config/supabase');
+const { createClient } = require('@supabase/supabase-js');
+
+// Create a service role client for bypassing RLS when writing security logs
+const supabaseService = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_KEY,
+    {
+        auth: {
+            autoRefreshToken: false,
+            persistSession: false
+        }
+    }
+);
 
 /**
  * Middleware to enhance security for group operations
@@ -122,7 +135,8 @@ const validateGroupInput = (req, res, next) => {
  */
 const logSecurityEvent = async (userId, eventType, details) => {
     try {
-        await supabase
+        // Use service role client to bypass RLS
+        await supabaseService
             .from('security_logs')
             .insert({
                 user_id: userId,
@@ -134,6 +148,7 @@ const logSecurityEvent = async (userId, eventType, details) => {
             });
     } catch (error) {
         console.error('Failed to log security event:', error);
+        // Don't throw error to avoid breaking main functionality
     }
 };
 
@@ -183,7 +198,7 @@ const detectSuspiciousActivity = async (req, res, next) => {
     
     try {
         // Check for recent failed access attempts
-        const { data: failedAttempts, error } = await supabase
+        const { data: failedAttempts, error } = await supabaseService
             .from('security_logs')
             .select('count')
             .eq('user_id', userId)

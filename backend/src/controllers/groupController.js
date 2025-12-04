@@ -1,4 +1,5 @@
 const { supabase } = require('../config/supabase');
+const { logGroupActivity } = require('./groupActivityController');
 
 /**
  * Groups Controller
@@ -276,6 +277,13 @@ const createGroup = async (req, res) => {
             });
         }
 
+        // Log activity
+        await logGroupActivity(group.id, userId, 'group_created', {
+            group_name: group.name,
+            group_description: group.description,
+            visibility: group.visibility
+        });
+
         res.status(201).json({
             success: true,
             data: {
@@ -358,6 +366,12 @@ const updateGroup = async (req, res) => {
             });
         }
 
+        // Log activity
+        await logGroupActivity(id, userId, 'group_updated', {
+            group_name: group.name,
+            changes: updateData
+        });
+
         res.json({
             success: true,
             data: {
@@ -383,6 +397,17 @@ const deleteGroup = async (req, res) => {
     try {
         const { id } = req.params;
         const userId = req.user.id;
+
+        // Get group info before deletion for logging
+        const { data: groupInfo, error: groupInfoError } = await supabase
+            .from('groups')
+            .select('name')
+            .eq('id', id)
+            .single();
+            
+        if (groupInfoError) {
+            console.error('Error fetching group info:', groupInfoError);
+        }
 
         // Check if user is owner
         const { data: membership, error: membershipError } = await supabase
@@ -423,6 +448,11 @@ const deleteGroup = async (req, res) => {
                 message: error.message
             });
         }
+
+        // Log activity before deletion
+        await logGroupActivity(id, userId, 'group_deleted', {
+            group_name: groupInfo?.name || 'Unknown'
+        });
 
         res.json({
             success: true,
