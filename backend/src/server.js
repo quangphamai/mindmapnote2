@@ -14,6 +14,7 @@ const dashboardRoutes = require('./routes/dashboardRoutes');
 const ragRoutes = require('./routes/ragRoutes');
 const migrationRoutes = require('./routes/migrationRoutes');
 const userRoutes = require('./routes/userRoutes');
+const integrationRoutes = require('./routes/integrations');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -101,6 +102,7 @@ app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/rag', ragRoutes);
 app.use('/api/migration', migrationRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/integrations', integrationRoutes);
 
 // Enhanced 404 handler with detailed logging
 app.use((req, res) => {
