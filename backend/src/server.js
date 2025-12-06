@@ -11,6 +11,7 @@ const groupRoutes = require('./routes/groupRoutes');
 const inviteRoutes = require('./routes/inviteRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const ragRoutes = require('./routes/ragRoutes');
+const embeddingRoutes = require('./routes/embeddingRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -75,6 +76,7 @@ app.use('/api/groups', groupRoutes);
 app.use('/api/invites', inviteRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/rag', ragRoutes);
+app.use('/api/embedding', embeddingRoutes);
 
 // 404 handler
 app.use((req, res) => {
