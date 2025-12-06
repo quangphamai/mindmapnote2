@@ -1,6 +1,29 @@
 const { supabase } = require('../config/supabase');
 const { hasDocumentAccess } = require('../middleware/acl');
 
+/**
+ * Log group activity
+ * @param {string} groupId - Group ID
+ * @param {string} userId - User ID performing the action
+ * @param {string} activityType - Type of activity
+ * @param {object} metadata - Additional metadata about the activity
+ */
+const logGroupActivity = async (groupId, userId, activityType, metadata = {}) => {
+    try {
+        await supabase
+            .from('group_activity_logs')
+            .insert({
+                group_id: groupId,
+                user_id: userId,
+                activity_type: activityType,
+                metadata: metadata
+            });
+    } catch (error) {
+        console.error('Failed to log group activity:', error);
+        // Don't throw error to avoid breaking main functionality
+    }
+};
+
 const DOC_SELECT = `
     *,
     categories:category_id (
@@ -154,6 +177,13 @@ const addGroupDocument = async (req, res) => {
             return res.status(500).json({ success: false, error: 'Failed to fetch document', message: fetchError.message });
         }
 
+        // Log activity
+        await logGroupActivity(groupId, userId, 'document_added', {
+            document_id: documentId,
+            document_title: result.document?.title || 'Untitled',
+            access_level: access_level
+        });
+
         return res.status(201).json({ success: true, data: { ...result.document, access_level: result.access_level }, message: 'Document added to group' });
     } catch (error) {
         console.error('Add group document exception:', error);
@@ -198,6 +228,12 @@ const updateGroupDocumentAccess = async (req, res) => {
             return res.status(500).json({ success: false, error: 'Failed to update access level', message: updateError.message });
         }
 
+        // Log activity
+        await logGroupActivity(groupId, userId, 'document_access_updated', {
+            document_id: documentId,
+            new_access_level: access_level
+        });
+
         return res.json({ success: true, message: 'Access level updated successfully' });
     } catch (error) {
         console.error('Update group document exception:', error);
@@ -232,6 +268,11 @@ const removeGroupDocument = async (req, res) => {
             .update({ group_id: null })
             .eq('id', documentId)
             .eq('group_id', groupId);
+
+        // Log activity
+        await logGroupActivity(groupId, userId, 'document_removed', {
+            document_id: documentId
+        });
 
         return res.json({ success: true, message: 'Document removed from group' });
     } catch (error) {

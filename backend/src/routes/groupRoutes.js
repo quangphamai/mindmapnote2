@@ -50,6 +50,11 @@ const {
     getGroupRoles
 } = require('../controllers/groupPermissionController');
 
+const {
+    getGroupTodos,
+    getGroupTodoStats
+} = require('../controllers/todoController');
+
 const router = express.Router();
 
 // All routes require authentication
@@ -130,5 +135,9 @@ router.get('/:groupId/permissions/check', checkPermission);           // GET /ap
 router.get('/:groupId/permissions/user', isGroupMember('groupId'), getUserPermissions); // View own permissions (members only)
 router.put('/:groupId/permissions/roles/:roleId', isGroupOwner('groupId'), updateRolePermissions); // Update role permissions (owner only)
 router.get('/:groupId/roles', isGroupMember('groupId'), getGroupRoles); // View group roles (members only)
+
+// Group todo routes
+router.get('/:groupId/todos', isGroupMember('groupId'), getGroupTodos); // View todos (members only)
+router.get('/:groupId/todos/stats', isGroupMember('groupId'), getGroupTodoStats); // View todo stats (members only)
 
 module.exports = router;

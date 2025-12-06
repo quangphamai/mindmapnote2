@@ -409,6 +409,7 @@ const uploadDocument = async (req, res) => {
 const getAllDocuments = async (req, res) => {
     try {
         const userId = req.user.id;
+        const userEmail = req.user.email;
         const { category_id, document_type, search } = req.query;
 
         const applyFilters = (query) => {
