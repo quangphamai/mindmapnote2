@@ -12,8 +12,7 @@ const groupActivityRoutes = require('./routes/groupActivityRoutesNew');
 const inviteRoutes = require('./routes/inviteRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const ragRoutes = require('./routes/ragRoutes');
-const migrationRoutes = require('./routes/migrationRoutes');
-const userRoutes = require('./routes/userRoutes');
+const embeddingRoutes = require('./routes/embeddingRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -99,8 +98,7 @@ app.use('/api', groupActivityRoutes);
 app.use('/api/invites', inviteRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/rag', ragRoutes);
-app.use('/api/migration', migrationRoutes);
-app.use('/api/users', userRoutes);
+app.use('/api/embedding', embeddingRoutes);
 
 // Enhanced 404 handler with detailed logging
 app.use((req, res) => {

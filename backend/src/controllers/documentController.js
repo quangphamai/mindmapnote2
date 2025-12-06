@@ -4,6 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const embeddingQueue = require('../services/embeddingQueue');
 
 /**
  * Cấu hình multer để xử lý upload files
@@ -360,53 +361,34 @@ const uploadDocument = async (req, res) => {
             'text/markdown'
         ];
 
-        let embeddingResult = null;
+        let embeddingJobId = null;
         if (embeddableTypes.includes(file.mimetype)) {
-            console.log('[UPLOAD] Document có thể embedding, bắt đầu process...');
+            console.log('[UPLOAD] Document có thể embedding, thêm vào hàng đợi...');
             
-            // Chạy embedding trong background (không đợi kết quả)
-            // Nếu muốn đợi: await runEmbedding(data.id)
-            // Nếu không đợi: runEmbedding(data.id).catch(err => console.error(...))
+            // Thêm vào hàng đợi embedding (async, không đợi)
+            // User sẽ nhận response ngay lập tức
+            embeddingJobId = await embeddingQueue.add(data.id, 'normal');
             
-            // OPTION: Đợi embedding xong mới response (đồng bộ)
-            // User sẽ đợi 3-10s nhưng đảm bảo document sẵn sàng cho RAG ngay
-            embeddingResult = await runEmbedding(data.id);
-            
-            if (embeddingResult.success) {
-                console.log('[UPLOAD] ✅ Embedding thành công');
+            if (embeddingJobId) {
+                console.log('[UPLOAD] ✅ Embedding job đã được tạo:', embeddingJobId);
             } else {
-                // Embedding thất bại KHÔNG ảnh hưởng upload
-                // Document vẫn được lưu, chỉ không có embeddings
-                console.error('[UPLOAD] ⚠️ Embedding thất bại:', embeddingResult.error);
-                console.error('[UPLOAD] Document đã upload nhưng chưa có embeddings');
-                // Có thể log vào database để retry sau
-                await supabase
-                    .from('activity_logs')
-                    .insert([{
-                        user_id: userId,
-                        activity_type: 'embedding_failed',
-                        metadata: {
-                            document_id: data.id,
-                            error: embeddingResult.error
-                        }
-                    }]);
+                console.log('[UPLOAD] ⚠️ Không thể tạo embedding job (có thể đã có job đang chạy)');
             }
         } else {
             console.log('[UPLOAD] File type không hỗ trợ embedding:', file.mimetype);
         }
 
-        // Response bao gồm thông tin embedding status
+        // Response ngay lập tức, không đợi embedding
         return res.status(201).json({
             success: true,
             data: data,
             message: 'Document uploaded successfully',
-            embedding: embeddingResult ? {
-                completed: embeddingResult.success,
-                message: embeddingResult.success 
-                    ? 'Embeddings created successfully' 
-                    : `Embedding failed: ${embeddingResult.error}`,
+            embedding: embeddingJobId ? {
+                job_id: embeddingJobId,
+                status: 'pending',
+                message: 'Embedding queued for processing'
             } : {
-                completed: false,
+                status: 'skipped',
                 message: 'File type not supported for embedding'
             }
         });
